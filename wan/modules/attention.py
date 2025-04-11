@@ -110,6 +110,31 @@ def flash_attention(
             deterministic=deterministic)[0].unflatten(0, (b, lq))
     else:
         assert FLASH_ATTN_2_AVAILABLE
+        ###
+        # x = flash_attn.flash_attn_varlen_func(
+        #     q=q,
+        #     k=k,
+        #     v=v,
+        #     cu_seqlens_q=torch.cat([q_lens.new_zeros([1]), q_lens]).cumsum(
+        #         0, dtype=torch.int32).to(q.device, non_blocking=True),
+        #     cu_seqlens_k=torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
+        #         0, dtype=torch.int32).to(q.device, non_blocking=True),
+        #     max_seqlen_q=lq,
+        #     max_seqlen_k=lk,
+        #     dropout_p=dropout_p,
+        #     softmax_scale=softmax_scale,
+        #     causal=causal,
+        #     window_size=window_size,
+        #     deterministic=deterministic).unflatten(0, (b, lq))
+
+        ### flash attention使用bfloat16精度计算，否则内部会精度溢出
+        q = q.to(torch.bfloat16)
+        k = k.to(torch.bfloat16)
+        v = v.to(torch.bfloat16)
+
+        # ###
+        # # self attn和cross attn都是调用的这个接口
+        # print("flash_attn.flash_attn_varlen_func!!!")
         x = flash_attn.flash_attn_varlen_func(
             q=q,
             k=k,
@@ -123,8 +148,7 @@ def flash_attention(
             dropout_p=dropout_p,
             softmax_scale=softmax_scale,
             causal=causal,
-            window_size=window_size,
-            deterministic=deterministic).unflatten(0, (b, lq))
+            window_size=window_size).unflatten(0, (b, lq))      
 
     # output
     return x.type(out_dtype)

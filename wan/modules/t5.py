@@ -468,7 +468,7 @@ def umt5_xxl(**kwargs):
     cfg.update(**kwargs)
     return _t5('umt5-xxl', **cfg)
 
-
+### 对外的接口
 class T5EncoderModel:
 
     def __init__(
@@ -495,6 +495,7 @@ class T5EncoderModel:
         logging.info(f'loading {checkpoint_path}')
         model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
         self.model = model
+        
         if shard_fn is not None:
             self.model = shard_fn(self.model, sync_module_states=False)
         else:

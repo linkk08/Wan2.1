@@ -44,7 +44,9 @@ def _validate_args(args):
 
     # The default sampling steps are 40 for image-to-video tasks and 50 for text-to-video tasks.
     if args.sample_steps is None:
+        ###
         args.sample_steps = 40 if "i2v" in args.task else 50
+        # args.sample_steps = 40 if "i2v" in args.task else 10
 
     if args.sample_shift is None:
         args.sample_shift = 5.0
@@ -155,8 +157,8 @@ def _parse_args():
     parser.add_argument(
         "--prompt_extend_target_lang",
         type=str,
-        default="zh",
-        choices=["zh", "en"],
+        default="ch",
+        choices=["ch", "en"],
         help="The target language of prompt extend.")
     parser.add_argument(
         "--base_seed",
@@ -260,7 +262,7 @@ def generate(args):
 
     cfg = WAN_CONFIGS[args.task]
     if args.ulysses_size > 1:
-        assert cfg.num_heads % args.ulysses_size == 0, f"`{cfg.num_heads=}` cannot be divided evenly by `{args.ulysses_size=}`."
+        assert cfg.num_heads % args.ulysses_size == 0, f"`num_heads` must be divisible by `ulysses_size`."
 
     logging.info(f"Generation job args: {args}")
     logging.info(f"Generation model config: {cfg}")
@@ -297,6 +299,8 @@ def generate(args):
             logging.info(f"Extended prompt: {args.prompt}")
 
         logging.info("Creating WanT2V pipeline.")
+
+        ### 模型初始化
         wan_t2v = wan.WanT2V(
             config=cfg,
             checkpoint_dir=args.ckpt_dir,
@@ -308,8 +312,22 @@ def generate(args):
             t5_cpu=args.t5_cpu,
         )
 
+        # ### 打印模型结构
+        # print("********** Wan2.1 text_encoder **********")
+        # print(wan_t2v.text_encoder.model)
+        # print("********** Wan2.1 model **********")
+        # print(wan_t2v.model)
+        # print("********** Wan2.1 vae **********")
+        # print(wan_t2v.vae.model)
+        # exit(0)
+
+
         logging.info(
             f"Generating {'image' if 't2i' in args.task else 'video'} ...")
+
+        ###
+        import time
+        t_start = time.time()
         video = wan_t2v.generate(
             args.prompt,
             size=SIZE_CONFIGS[args.size],
@@ -320,6 +338,8 @@ def generate(args):
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
             offload_model=args.offload_model)
+        t_end = time.time()
+        print(f"Generation time: {t_end - t_start:.2f}s")
 
     else:
         if args.prompt is None:
@@ -384,7 +404,7 @@ def generate(args):
             formatted_prompt = args.prompt.replace(" ", "_").replace("/",
                                                                      "_")[:50]
             suffix = '.png' if "t2i" in args.task else '.mp4'
-            args.save_file = f"{args.task}_{args.size.replace('*','x') if sys.platform=='win32' else args.size}_{args.ulysses_size}_{args.ring_size}_{formatted_prompt}_{formatted_time}" + suffix
+            args.save_file = f"{args.task}_{args.size}_{args.ulysses_size}_{args.ring_size}_{formatted_prompt}_{formatted_time}" + suffix
 
         if "t2i" in args.task:
             logging.info(f"Saving generated image to {args.save_file}")

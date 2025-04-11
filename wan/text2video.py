@@ -169,8 +169,14 @@ class WanT2V:
 
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
+            ### text_encoder推理
             context = self.text_encoder([input_prompt], self.device)
             context_null = self.text_encoder([n_prompt], self.device)
+
+            # ###
+            # print("context[0].dtype: ", context[0].dtype)
+            # print("context_null[0].dtype: ", context_null[0].dtype)
+            
             if offload_model:
                 self.text_encoder.model.cpu()
         else:
@@ -196,8 +202,10 @@ class WanT2V:
 
         no_sync = getattr(self.model, 'no_sync', noop_no_sync)
 
+        ### amp(Automatic Mixed Precision):自动混合精度。
         # evaluation mode
         with amp.autocast(dtype=self.param_dtype), torch.no_grad(), no_sync():
+        # with amp.autocast(dtype=torch.float16), torch.no_grad(), no_sync():
 
             if sample_solver == 'unipc':
                 sample_scheduler = FlowUniPCMultistepScheduler(
@@ -233,10 +241,16 @@ class WanT2V:
                 timestep = torch.stack(timestep)
 
                 self.model.to(self.device)
+                ### model推理
                 noise_pred_cond = self.model(
                     latent_model_input, t=timestep, **arg_c)[0]
                 noise_pred_uncond = self.model(
                     latent_model_input, t=timestep, **arg_null)[0]
+                
+                # ###
+                # print("latent_model_input[0].dtype: ", latent_model_input[0].dtype)
+                # print("noise_pred_cond[0].dtype: ", noise_pred_cond[0].dtype)
+                # print("noise_pred_uncond[0].dtype: ", noise_pred_uncond[0].dtype)
 
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
@@ -253,6 +267,8 @@ class WanT2V:
             if offload_model:
                 self.model.cpu()
                 torch.cuda.empty_cache()
+            
+            ### vae推理
             if self.rank == 0:
                 videos = self.vae.decode(x0)
 

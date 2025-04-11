@@ -16,7 +16,9 @@ def sinusoidal_embedding_1d(dim, position):
     # preprocess
     assert dim % 2 == 0
     half = dim // 2
-    position = position.type(torch.float64)
+    ###
+    # position = position.type(torch.float64)
+    position = position.type(torch.float)
 
     # calculation
     sinusoid = torch.outer(
@@ -28,15 +30,50 @@ def sinusoidal_embedding_1d(dim, position):
 @amp.autocast(enabled=False)
 def rope_params(max_seq_len, dim, theta=10000):
     assert dim % 2 == 0
+    ###
+    # freqs = torch.outer(
+    #     torch.arange(max_seq_len),
+    #     1.0 / torch.pow(theta,
+    #                     torch.arange(0, dim, 2).to(torch.float64).div(dim)))
     freqs = torch.outer(
         torch.arange(max_seq_len),
         1.0 / torch.pow(theta,
-                        torch.arange(0, dim, 2).to(torch.float64).div(dim)))
+                        torch.arange(0, dim, 2).to(torch.float).div(dim)))
     freqs = torch.polar(torch.ones_like(freqs), freqs)
     return freqs
 
+###
+# @amp.autocast(enabled=False)
+# def rope_apply(x, grid_sizes, freqs):
+#     n, c = x.size(2), x.size(3) // 2
 
-@amp.autocast(enabled=False)
+#     # split freqs
+#     freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+
+#     # loop over samples
+#     output = []
+#     for i, (f, h, w) in enumerate(grid_sizes.tolist()):
+#         seq_len = f * h * w
+
+#         # precompute multipliers
+#         x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float64).reshape(
+#             seq_len, n, -1, 2))
+#         freqs_i = torch.cat([
+#             freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+#             freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+#             freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+#         ],
+#                             dim=-1).reshape(seq_len, 1, -1)
+
+#         # apply rotary embedding
+#         x_i = torch.view_as_real(x_i * freqs_i).flatten(2)
+#         x_i = torch.cat([x_i, x[i, seq_len:]])
+
+#         # append to collection
+#         output.append(x_i)
+#     return torch.stack(output).float()
+
+@amp.autocast(enabled=False)    # 禁用自动混合精度
 def rope_apply(x, grid_sizes, freqs):
     n, c = x.size(2), x.size(3) // 2
 
@@ -48,18 +85,42 @@ def rope_apply(x, grid_sizes, freqs):
     for i, (f, h, w) in enumerate(grid_sizes.tolist()):
         seq_len = f * h * w
 
-        # precompute multipliers
-        x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float64).reshape(
-            seq_len, n, -1, 2))
-        freqs_i = torch.cat([
-            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        # # precompute multipliers
+        # x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float64).reshape(
+        #     seq_len, n, -1, 2))
+        x_slice = x[i, :seq_len].to(torch.float).reshape(seq_len, n, -1, 2)
+        real_part_x = x_slice[..., 0]
+        imag_part_x = x_slice[..., 1]
+
+        # freqs_i = torch.cat([
+        #     freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+        #     freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+        #     freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        # ],
+        #                     dim=-1).reshape(seq_len, 1, -1)
+
+        real_part_freqs = torch.cat([
+            freqs[0][:f].real.view(f, 1, 1, -1).expand(f, h, w, -1),
+            freqs[1][:h].real.view(1, h, 1, -1).expand(f, h, w, -1),
+            freqs[2][:w].real.view(1, 1, w, -1).expand(f, h, w, -1)
+        ],
+                            dim=-1).reshape(seq_len, 1, -1)
+        
+        imag_part_freqs = torch.cat([
+            freqs[0][:f].imag.view(f, 1, 1, -1).expand(f, h, w, -1),
+            freqs[1][:h].imag.view(1, h, 1, -1).expand(f, h, w, -1),
+            freqs[2][:w].imag.view(1, 1, w, -1).expand(f, h, w, -1)
         ],
                             dim=-1).reshape(seq_len, 1, -1)
 
         # apply rotary embedding
-        x_i = torch.view_as_real(x_i * freqs_i).flatten(2)
+        # x_i = torch.view_as_real(x_i * freqs_i).flatten(2)
+        # 手动实现复数乘法
+        new_real_part = real_part_x * real_part_freqs - imag_part_x * imag_part_freqs
+        new_imag_part = real_part_x * imag_part_freqs + imag_part_x * real_part_freqs
+        # 合并实部和虚部
+        x_i = torch.stack([new_real_part, new_imag_part], dim=-1).flatten(2)
+
         x_i = torch.cat([x_i, x[i, seq_len:]])
 
         # append to collection
@@ -230,7 +291,7 @@ WAN_CROSSATTENTION_CLASSES = {
     'i2v_cross_attn': WanI2VCrossAttention,
 }
 
-
+### 核心模块
 class WanAttentionBlock(nn.Module):
 
     def __init__(self,
@@ -294,6 +355,8 @@ class WanAttentionBlock(nn.Module):
             e = (self.modulation + e).chunk(6, dim=1)
         assert e[0].dtype == torch.float32
 
+        # ###
+        # print("self attn!!!")
         # self-attention
         y = self.self_attn(
             self.norm1(x).float() * (1 + e[1]) + e[0], seq_lens, grid_sizes,
@@ -309,6 +372,8 @@ class WanAttentionBlock(nn.Module):
                 x = x + y * e[5]
             return x
 
+        # ###
+        # print("cross attn!!!")
         x = cross_attn_ffn(x, context, context_lens, e)
         return x
 
@@ -357,7 +422,7 @@ class MLPProj(torch.nn.Module):
         clip_extra_context_tokens = self.proj(image_embeds)
         return clip_extra_context_tokens
 
-
+### 对外的接口
 class WanModel(ModelMixin, ConfigMixin):
     r"""
     Wan diffusion backbone supporting both text-to-video and image-to-video.

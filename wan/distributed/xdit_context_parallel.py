@@ -21,6 +21,46 @@ def pad_freqs(original_tensor, target_len):
     padded_tensor = torch.cat([original_tensor, padding_tensor], dim=0)
     return padded_tensor
 
+###
+# @amp.autocast(enabled=False)
+# def rope_apply(x, grid_sizes, freqs):
+#     """
+#     x:          [B, L, N, C].
+#     grid_sizes: [B, 3].
+#     freqs:      [M, C // 2].
+#     """
+#     s, n, c = x.size(1), x.size(2), x.size(3) // 2
+#     # split freqs
+#     freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+
+#     # loop over samples
+#     output = []
+#     for i, (f, h, w) in enumerate(grid_sizes.tolist()):
+#         seq_len = f * h * w
+
+#         # precompute multipliers
+#         x_i = torch.view_as_complex(x[i, :s].to(torch.float64).reshape(
+#             s, n, -1, 2))
+#         freqs_i = torch.cat([
+#             freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+#             freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+#             freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+#         ],
+#                             dim=-1).reshape(seq_len, 1, -1)
+
+#         # apply rotary embedding
+#         sp_size = get_sequence_parallel_world_size()
+#         sp_rank = get_sequence_parallel_rank()
+#         freqs_i = pad_freqs(freqs_i, s * sp_size)
+#         s_per_rank = s
+#         freqs_i_rank = freqs_i[(sp_rank * s_per_rank):((sp_rank + 1) *
+#                                                        s_per_rank), :, :]
+#         x_i = torch.view_as_real(x_i * freqs_i_rank).flatten(2)
+#         x_i = torch.cat([x_i, x[i, s:]])
+
+#         # append to collection
+#         output.append(x_i)
+#     return torch.stack(output).float()
 
 @amp.autocast(enabled=False)
 def rope_apply(x, grid_sizes, freqs):
@@ -29,37 +69,56 @@ def rope_apply(x, grid_sizes, freqs):
     grid_sizes: [B, 3].
     freqs:      [M, C // 2].
     """
+    import numpy as np
     s, n, c = x.size(1), x.size(2), x.size(3) // 2
+    
+    freqs_np = freqs.cpu().numpy()
+    freqs_real = np.real(freqs_np)
+    freqs_imag = np.imag(freqs_np)
+    freqs_real = torch.from_numpy(freqs_real).to(torch.float32).to(freqs.device)
+    freqs_imag = torch.from_numpy(freqs_imag).to(torch.float32).to(freqs.device)
+    n, c = x.size(2), x.size(3) // 2
     # split freqs
-    freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
-
+    freqs_real = freqs_real.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+    freqs_imag = freqs_imag.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
     # loop over samples
     output = []
     for i, (f, h, w) in enumerate(grid_sizes.tolist()):
         seq_len = f * h * w
-
-        # precompute multipliers
-        x_i = torch.view_as_complex(x[i, :s].to(torch.float64).reshape(
-            s, n, -1, 2))
-        freqs_i = torch.cat([
-            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        x_i_real = (x[i, :s].reshape(s, n, -1))[..., 0::2].to(torch.float32)
+        x_i_imag = (x[i, :s].reshape(s, n, -1))[..., 1::2].to(torch.float32)
+        
+        freqs_real_i = torch.cat([
+            freqs_real[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            freqs_real[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            freqs_real[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
         ],
                             dim=-1).reshape(seq_len, 1, -1)
-
-        # apply rotary embedding
+        
+        freqs_imag_i = torch.cat([
+            freqs_imag[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            freqs_imag[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            freqs_imag[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        ],
+                            dim=-1).reshape(seq_len, 1, -1)
         sp_size = get_sequence_parallel_world_size()
         sp_rank = get_sequence_parallel_rank()
-        freqs_i = pad_freqs(freqs_i, s * sp_size)
+        freqs_imag_i = pad_freqs(freqs_imag_i, s * sp_size)
+        freqs_real_i = pad_freqs(freqs_real_i, s * sp_size)
+        
         s_per_rank = s
-        freqs_i_rank = freqs_i[(sp_rank * s_per_rank):((sp_rank + 1) *
+        freqs_imag_i_rank = freqs_imag_i[(sp_rank * s_per_rank):((sp_rank + 1) *
                                                        s_per_rank), :, :]
-        x_i = torch.view_as_real(x_i * freqs_i_rank).flatten(2)
-        x_i = torch.cat([x_i, x[i, s:]])
+        freqs_real_i_rank = freqs_real_i[(sp_rank * s_per_rank):((sp_rank + 1) *
+                                                       s_per_rank), :, :]
 
+        # apply rotary embedding
+        res_real = x_i_real * freqs_real_i_rank - x_i_imag * freqs_imag_i_rank
+        res_imag = x_i_real * freqs_imag_i_rank + x_i_imag * freqs_real_i_rank
+        res = torch.stack([res_real, res_imag], dim=-1).flatten(2)
+        res = torch.cat([res, x[i, seq_len:]])
         # append to collection
-        output.append(x_i)
+        output.append(res)
     return torch.stack(output).float()
 
 

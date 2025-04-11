@@ -78,9 +78,9 @@ def gradio_interface():
                     placeholder="Describe the image you want to generate",
                 )
                 tar_lang = gr.Radio(
-                    choices=["ZH", "EN"],
+                    choices=["CH", "EN"],
                     label="Target language of prompt enhance",
-                    value="ZH")
+                    value="CH")
                 run_p_button = gr.Button(value="Prompt Enhance")
 
                 with gr.Accordion("Advanced Options", open=True):
